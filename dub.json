@@ -1,0 +1,6 @@
+{
+    "name": "bluetooth-scanner",
+    "description": "Basic Bluetooth Device Scanner & Info Grabber for Windows (D language)",
+    "authors": ["1rhino2"],
+    "license": "MIT"
+}
