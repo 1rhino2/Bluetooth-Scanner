@@ -1,0 +1,10 @@
+.dub/
+*.exe
+*.obj
+*.o
+*.lst
+*.pdb
+*.ilk
+dub.selections.json
+test-out.json
+test-services.json

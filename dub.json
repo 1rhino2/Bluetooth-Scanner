@@ -1,6 +1,25 @@
 {
-    "name": "bluetooth-scanner",
-    "description": "Basic Bluetooth Device Scanner & Info Grabber for Windows (D language)",
-    "authors": ["1rhino2"],
-    "license": "MIT"
+	"name": "bluetooth-scanner",
+	"description": "Windows Bluetooth device enumerator (D, single static binary)",
+	"authors": ["1rhino2"],
+	"license": "MIT",
+	"copyright": "Copyright (c) 2025 1rhino2",
+	"targetType": "executable",
+	"mainSourceFile": "source/app.d",
+	"importPaths": ["source"],
+	"dependencies": {},
+	"configurations": [
+		{
+			"name": "application",
+			"targetType": "executable",
+			"targetName": "bluetooth-scanner",
+			"mainSourceFile": "source/app.d"
+		},
+		{
+			"name": "struct-test",
+			"targetType": "executable",
+			"targetName": "struct-test",
+			"mainSourceFile": "test/struct_test.d"
+		}
+	]
 }

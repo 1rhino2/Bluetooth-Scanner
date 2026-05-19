@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dlang-community/setup-dlang@v1
+        with:
+          compiler: dmd-latest
+      - name: struct layout check
+        run: dub run --config=struct-test --build=release
+      - name: release build
+        run: dub build --config=application --build=release
+      - name: full test suite
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-all.ps1

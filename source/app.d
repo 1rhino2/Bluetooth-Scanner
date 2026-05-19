@@ -1,151 +1,212 @@
-// Link with Windows Bluetooth library
-pragma(lib, "Bthprops.lib");
+module app;
 
-import core.sys.windows.windows;
+import std.conv;
+import std.file;
+import core.stdc.stdlib : exit;
 import std.stdio;
 import std.string;
-import std.conv;
-import std.algorithm;
 
-// Minimal Windows Bluetooth API bindings for device discovery
-extern (Windows)
+import scanner.device;
+import scanner.options;
+import scanner.scan;
+import output.report;
+import output.json_out;
+
+struct CliOptions
 {
-    alias HANDLE = void*;
-    struct BLUETOOTH_DEVICE_SEARCH_PARAMS
+    bool once;
+    bool interactive = true;
+    bool showHelp;
+    bool queryServices;
+    bool noInquiry;
+    bool pairedOnly;
+    bool jsonStdout;
+    string jsonPath;
+    ubyte timeout = 4;
+    ScanOptions scan;
+}
+
+void printUsage()
+{
+    writeln("bluetooth-scanner - enumerate Bluetooth devices on Windows");
+    writeln();
+    writeln("usage:");
+    writeln("  bluetooth-scanner [options]");
+    writeln();
+    writeln("options:");
+    writeln("  --once              scan once and exit");
+    writeln("  --timeout N         inquiry multiplier 1..48 (default 4)");
+    writeln("  --fast              same as --timeout 1");
+    writeln("  --no-inquiry        paired/remembered cache only");
+    writeln("  --paired-only       skip unknown unpaired devices");
+    writeln("  --services          list installed service GUIDs");
+    writeln("  --json [path]       JSON to stdout or file");
+    writeln("  -h, --help          show this help");
+    writeln();
+    writeln("examples:");
+    writeln("  dub run -- --once --fast");
+    writeln("  dub run -- --once --services --json scan.json");
+}
+
+bool parseArgs(string[] args, ref CliOptions cli, out string err)
+{
+    cli = CliOptions();
+    cli.scan = ScanOptions();
+
+    size_t i = 1;
+    while (i < args.length)
     {
-        DWORD dwSize;
-        BOOL fReturnAuthenticated;
-        BOOL fReturnRemembered;
-        BOOL fReturnUnknown;
-        BOOL fReturnConnected;
-        BOOL fIssueInquiry;
-        UCHAR cTimeoutMultiplier;
-        HANDLE hRadio;
+        auto arg = args[i];
+        if (arg == "-h" || arg == "--help")
+            cli.showHelp = true;
+        else if (arg == "--once")
+            cli.once = true;
+        else if (arg == "--fast")
+            cli.timeout = 1;
+        else if (arg == "--no-inquiry")
+            cli.noInquiry = true;
+        else if (arg == "--paired-only")
+            cli.pairedOnly = true;
+        else if (arg == "--services")
+            cli.queryServices = true;
+        else if (arg == "--json")
+        {
+            if (i + 1 < args.length && !args[i + 1].startsWith("-"))
+            {
+                cli.jsonPath = args[i + 1];
+                i += 2;
+                continue;
+            }
+            cli.jsonStdout = true;
+        }
+        else if (arg.startsWith("--json="))
+            cli.jsonPath = arg[7 .. $];
+        else if (arg == "--timeout")
+        {
+            if (i + 1 >= args.length)
+            {
+                err = "--timeout requires a value";
+                return false;
+            }
+            try
+                cli.timeout = cast(ubyte)to!uint(args[i + 1]);
+            catch (Exception e)
+            {
+                err = "invalid --timeout value";
+                return false;
+            }
+            i += 2;
+            continue;
+        }
+        else if (arg.startsWith("--timeout="))
+        {
+            auto v = arg[10 .. $];
+            try
+                cli.timeout = cast(ubyte)to!uint(v);
+            catch (Exception e)
+            {
+                err = "invalid --timeout value";
+                return false;
+            }
+        }
+        else
+        {
+            err = "unknown option: " ~ arg;
+            return false;
+        }
+        i++;
     }
 
-    struct BLUETOOTH_DEVICE_INFO
+    cli.scan.timeoutMultiplier = cli.timeout;
+    cli.scan.issueInquiry = !cli.noInquiry;
+    cli.scan.queryServices = cli.queryServices;
+    if (cli.pairedOnly)
+        cli.scan.returnUnknown = false;
+
+    string optErr;
+    if (!validateScanOptions(cli.scan, optErr))
     {
-        DWORD dwSize;
-        ubyte[6] address;
-        ULONG ulClassofDevice;
-        BOOL fConnected;
-        BOOL fRemembered;
-        BOOL fAuthenticated;
-        wchar[248] szName;
+        err = optErr;
+        return false;
     }
-
-    HANDLE BluetoothFindFirstDevice(const BLUETOOTH_DEVICE_SEARCH_PARAMS*, BLUETOOTH_DEVICE_INFO*);
-    BOOL BluetoothFindNextDevice(HANDLE, BLUETOOTH_DEVICE_INFO*);
-    BOOL BluetoothFindDeviceClose(HANDLE);
+    return true;
 }
 
-void printDeviceInfo(size_t count, ref BLUETOOTH_DEVICE_INFO deviceInfo)
+void emitJson(const ScanResult result, const CliOptions cli)
 {
-    string addr = deviceInfo.address[0 .. 6].map!(b => format("%02X", b)).join(":");
-    wchar nullChar = 0;
-    auto nameLen = countUntil(deviceInfo.szName[], nullChar);
-    string name = to!string(deviceInfo.szName[0 .. nameLen]);
-    writeln("\n[+] Device #", count);
-    writeln("    Address      : ", addr);
-    writeln("    Name         : ", (name.length ? name : "<unknown>"));
-    writeln("    Class        : ", format("0x%08X", deviceInfo.ulClassofDevice));
-    writeln("    Connected    : ", deviceInfo.fConnected ? "Yes" : "No");
-    writeln("    Remembered   : ", deviceInfo.fRemembered ? "Yes" : "No");
-    writeln("    Authenticated: ", deviceInfo.fAuthenticated ? "Yes" : "No");
-}
-
-void printBanner()
-{
-    writeln("\n========================================");
-    writeln("   Windows Bluetooth Device Scanner");
-    writeln("========================================\n");
-    writeln("  Fast, simple, and pentest-ready!");
-    writeln("  Scans for nearby Bluetooth devices.");
-    writeln("  Press Enter to start scanning.\n");
-}
-
-void printSummary(size_t count)
-{
-    if (count == 0)
+    if (cli.jsonPath.length)
     {
-        writeln("\n[*] No Bluetooth devices found.");
-        writeln("[?] Try these tips:");
-        writeln("   - Move closer to devices");
-        writeln("   - Enable device discoverable mode");
-        writeln("   - Ensure Bluetooth is ON");
-        writeln("   - Restart Bluetooth or your PC");
-        writeln("   - Try running as Administrator");
+        auto f = File(cli.jsonPath, "w");
+        writeScanJson(result, f);
+        f.close();
+        writeln("[*] Wrote ", cli.jsonPath);
     }
     else
-    {
-        writeln("\n[*] Scan complete. Found ", count, " device(s).");
-        writeln("[i] Use this info for further Bluetooth pentesting or enumeration.");
-    }
+        writeScanJson(result, stdout);
 }
 
-void main()
+int runScan(const CliOptions cli)
 {
+    auto result = scanDevices(cli.scan);
+
+    if (cli.jsonStdout || cli.jsonPath.length)
+        emitJson(result, cli);
+    else
+        printScanResult(result, true);
+
+    if (result.error !is null)
+        return 2;
+    return result.devices.length ? 0 : 1;
+}
+
+void main(string[] args)
+{
+    CliOptions cli;
+    string err;
+    if (!parseArgs(args, cli, err))
+    {
+        if (err.length)
+            stderr.writeln("[!]", err);
+        printUsage();
+        exit(1);
+    }
+
+    if (cli.showHelp)
+    {
+        printUsage();
+        exit(0);
+    }
+
+    if (cli.once || args.length > 1)
+        cli.interactive = false;
+
+    if (!cli.interactive)
+    {
+        if (!cli.jsonStdout)
+        {
+            printBanner();
+            writeln("[*] Scanning...");
+        }
+        exit(runScan(cli));
+    }
+
     while (true)
     {
         printBanner();
-        writeln("[*] Scanning for Bluetooth devices... (this is quick!)\n");
-
-        BLUETOOTH_DEVICE_SEARCH_PARAMS searchParams;
-        searchParams.dwSize = BLUETOOTH_DEVICE_SEARCH_PARAMS.sizeof;
-        searchParams.fReturnAuthenticated = true;
-        searchParams.fReturnRemembered = true;
-        searchParams.fReturnUnknown = true;
-        searchParams.fReturnConnected = true;
-        searchParams.fIssueInquiry = true;
-        searchParams.cTimeoutMultiplier = 1; // Fastest scan (~1.5s)
-        searchParams.hRadio = null;
-
-        BLUETOOTH_DEVICE_INFO deviceInfo;
-        deviceInfo.dwSize = BLUETOOTH_DEVICE_INFO.sizeof;
-
-        auto hFind = BluetoothFindFirstDevice(&searchParams, &deviceInfo);
-        size_t count = 0;
-        bool scanSuccess = false;
-        if (hFind !is null)
+        writeln("[*] Press Enter to scan (q + Enter to quit).");
+        auto line = stdin.readln().strip();
+        if (line == "q" || line == "Q")
         {
-            scanSuccess = true;
-            do
-            {
-                count++;
-                printDeviceInfo(count, deviceInfo);
-            }
-            while (BluetoothFindNextDevice(hFind, &deviceInfo));
-            BluetoothFindDeviceClose(hFind);
-        }
-
-        if (!scanSuccess || count == 0)
-        {
-            writeln("\n[!] No Bluetooth devices found or Bluetooth is off.");
-            writeln("[?] Make sure Bluetooth is enabled and your device is discoverable.");
-            writeln("[?] Troubleshooting:");
-            writeln("   - Check if Bluetooth is enabled in Windows settings");
-            writeln("   - Ensure your device is not in airplane mode");
-            writeln("   - Try restarting your Bluetooth radio or PC");
-            writeln("   - Move closer to target devices");
-            writeln("   - Try running as Administrator");
-            writeln("\n[?] Press Enter to retry, or type 'q' then Enter to quit.");
-            string input = stdin.readln().strip();
-            if (input.length && (input[0] == 'q' || input[0] == 'Q'))
-            {
-                writeln("[i] Exiting. Stay safe!");
-                break;
-            }
-            continue;
-        }
-
-        printSummary(count);
-        writeln("\n[Press Enter to scan again, or type 'q' then Enter to quit]");
-        string input = stdin.readln().strip();
-        if (input.length && (input[0] == 'q' || input[0] == 'Q'))
-        {
-            writeln("[i] Exiting. Happy hunting!");
+            writeln("[i] Bye.");
             break;
         }
+
+        writeln("[*] Scanning...");
+        runScan(cli);
+        writeln();
+        writeln("[*] Enter to scan again, q to quit.");
+        line = stdin.readln().strip();
+        if (line == "q" || line == "Q")
+            break;
     }
 }
-// Made with love by @1rhino2
