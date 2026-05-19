@@ -86,6 +86,14 @@ test/
     Authenticated: yes
 ```
 
+## CI / testing
+
+```powershell
+.\scripts\test-all.ps1
+```
+
+On machines **with** a Bluetooth radio, live scans must succeed. On **GitHub Actions** (and other VMs without a radio), the same script still passes by checking struct layout, CLI parsing, and JSON error output (`ok: false`) when the stack returns no handle.
+
 ## Limits
 
 - Windows only (uses `Bthprops.lib`).
