@@ -16,17 +16,6 @@ dub build --build=release
 powershell -File scripts/test-all.ps1
 ```
 
-## Usage
-
-```powershell
-.\btscan.exe
-.\btscan.exe --json
-```
-
-## CI
-
-GitHub Actions runs on push (see `.github/workflows/ci.yml`).
-
 ## License
 
 MIT
